@@ -34,6 +34,7 @@ import {
 } from "#/components/conversation-events/chat/event-thought-helpers";
 import i18n from "#/i18n";
 import { I18nKey } from "#/i18n/declaration";
+import type { CompleteTranscriptEvents } from "./load-complete-events";
 
 export type TranscriptExportFormat = "markdown" | "html";
 
@@ -43,6 +44,8 @@ export interface TranscriptExportOptions {
   title?: string | null;
   model?: string | null;
 }
+
+type TranscriptEvents = OpenHandsEvent[] | CompleteTranscriptEvents;
 
 type TranscriptEntry =
   | {
@@ -152,6 +155,16 @@ const sanitizeMarkdownText = (value: string): string =>
 const safeTitle = (title?: string | null): string =>
   cleanInlineText(title || i18n.t(I18nKey.TRANSCRIPT_EXPORT$DEFAULT_TITLE)) ||
   i18n.t(I18nKey.TRANSCRIPT_EXPORT$DEFAULT_TITLE);
+
+const getTruncationNotice = (eventCount: number): string =>
+  `[transcript truncated: showing the most recent ${eventCount.toLocaleString("en-US")} events; earlier events omitted]`;
+
+const resolveTranscriptEvents = (
+  input: TranscriptEvents,
+): CompleteTranscriptEvents =>
+  Array.isArray(input)
+    ? { events: input, truncated: false, totalLoaded: input.length }
+    : input;
 
 const translatePlain = (
   key: I18nKey,
@@ -512,9 +525,10 @@ const markdownFence = (content: string): string => {
 };
 
 export const eventsToMarkdown = (
-  events: OpenHandsEvent[],
+  input: TranscriptEvents,
   options: TranscriptExportOptions,
 ): string => {
+  const { events, truncated } = resolveTranscriptEvents(input);
   const lines = [`# ${sanitizeMarkdownText(safeTitle(options.title))}`, ""];
 
   if (options.model) {
@@ -522,6 +536,10 @@ export const eventsToMarkdown = (
       `**${i18n.t(I18nKey.TRANSCRIPT_EXPORT$MODEL)}:** ${sanitizeMarkdownText(cleanInlineText(options.model))}`,
       "",
     );
+  }
+
+  if (truncated) {
+    lines.push(`> **${getTruncationNotice(events.length)}**`, "");
   }
 
   for (const entry of buildTranscriptEntries(
@@ -590,9 +608,10 @@ const htmlTimestamp = (
 };
 
 export const eventsToHtml = (
-  events: OpenHandsEvent[],
+  input: TranscriptEvents,
   options: TranscriptExportOptions,
 ): string => {
+  const { events, truncated } = resolveTranscriptEvents(input);
   const title = safeTitle(options.title);
   const body = buildTranscriptEntries(events, options.includeToolDetails)
     .map((entry) => {
@@ -633,6 +652,9 @@ export const eventsToHtml = (
   const model = options.model
     ? `<p class="model"><strong>${escapeHtml(i18n.t(I18nKey.TRANSCRIPT_EXPORT$MODEL))}:</strong> ${escapeHtml(cleanInlineText(options.model))}</p>`
     : "";
+  const truncationNotice = truncated
+    ? `<aside class="note truncation-notice" role="note"><strong>${escapeHtml(getTruncationNotice(events.length))}</strong></aside>`
+    : "";
 
   return `<!doctype html>
 <html lang="${escapeHtml(i18n.resolvedLanguage || i18n.language || "en")}">
@@ -670,7 +692,7 @@ export const eventsToHtml = (
   <main>
     <h1>${escapeHtml(title)}</h1>
     ${model}
-    ${body}
+    ${truncationNotice}${truncationNotice ? "\n    " : ""}${body}
   </main>
 </body>
 </html>

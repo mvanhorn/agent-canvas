@@ -1,6 +1,17 @@
 import type { OpenHandsEvent } from "#/types/agent-server/core";
 
 export const TRANSCRIPT_HISTORY_PAGE_SIZE = 100;
+export const MAX_TRANSCRIPT_EVENTS = 10_000;
+
+export interface CompleteTranscriptEvents {
+  events: OpenHandsEvent[];
+  truncated: boolean;
+  totalLoaded: number;
+}
+
+export interface LoadCompleteTranscriptEventsOptions {
+  maxEvents?: number;
+}
 
 interface TranscriptEventSearchOptions {
   limit: number;
@@ -25,16 +36,19 @@ const compareEventTimestamps = (
 ): number => first.timestamp.localeCompare(second.timestamp);
 
 /**
- * Loads the persisted history from the newest page back to the beginning,
- * then merges any live store events that have not persisted yet. The timestamp
- * anchor matches the chat's existing history pagination, while id-based
- * de-duplication keeps the result stable if pages overlap.
+ * Loads persisted history newest-first until it reaches the beginning or the
+ * configured event cap, then merges live store events that have not persisted
+ * yet. The timestamp anchor matches the chat's existing history pagination,
+ * while id-based de-duplication keeps the result stable if pages overlap.
  */
 export const loadCompleteTranscriptEvents = async (
   loadedEvents: OpenHandsEvent[],
   searchEvents: SearchTranscriptEvents,
   expectedEventCount?: number,
-): Promise<OpenHandsEvent[]> => {
+  {
+    maxEvents = MAX_TRANSCRIPT_EVENTS,
+  }: LoadCompleteTranscriptEventsOptions = {},
+): Promise<CompleteTranscriptEvents> => {
   const persistedDescending: OpenHandsEvent[] = [];
   const fetchedEventIds = new Set<string>();
   const seenPageIds = new Set<string>();
@@ -42,6 +56,7 @@ export const loadCompleteTranscriptEvents = async (
   let pageId: string | undefined;
   let usedCursor = false;
   let usingTimestampFallback = false;
+  let truncated = false;
 
   while (true) {
     const page = await searchEvents({
@@ -58,18 +73,33 @@ export const loadCompleteTranscriptEvents = async (
       );
     }
 
-    persistedDescending.push(...page.items);
     let pageOldestTimestamp: string | undefined;
     let addedEvent = false;
     page.items.forEach((event) => {
       if (!fetchedEventIds.has(event.id)) {
-        fetchedEventIds.add(event.id);
         addedEvent = true;
+        if (fetchedEventIds.size < maxEvents) {
+          fetchedEventIds.add(event.id);
+          persistedDescending.push(event);
+        } else {
+          truncated = true;
+        }
       }
       if (!pageOldestTimestamp || event.timestamp < pageOldestTimestamp) {
         pageOldestTimestamp = event.timestamp;
       }
     });
+
+    if (fetchedEventIds.size >= maxEvents) {
+      truncated ||=
+        Boolean(page.next_page_id) ||
+        (expectedEventCount !== undefined &&
+          expectedEventCount > fetchedEventIds.size);
+      // Persisted pages arrive newest-first. Keeping an early-history head
+      // would require paging the full conversation, defeating the load cap,
+      // so capped exports intentionally retain only the most recent tail.
+      break;
+    }
 
     if (page.next_page_id) {
       if (seenPageIds.has(page.next_page_id)) {
@@ -126,6 +156,7 @@ export const loadCompleteTranscriptEvents = async (
   // order returned by the server/store rather than being reordered by id.
   const completeEvents = [...eventsById.values()].sort(compareEventTimestamps);
   if (
+    !truncated &&
     expectedEventCount !== undefined &&
     fetchedEventIds.size < expectedEventCount
   ) {
@@ -133,5 +164,7 @@ export const loadCompleteTranscriptEvents = async (
       `Transcript history is incomplete: expected ${expectedEventCount} persisted events, received ${fetchedEventIds.size}.`,
     );
   }
-  return completeEvents;
+  const events = completeEvents.slice(-maxEvents);
+  truncated ||= completeEvents.length > events.length;
+  return { events, truncated, totalLoaded: events.length };
 };

@@ -149,6 +149,7 @@ describe("conversation transcript export", () => {
     expect(markdown).toContain("Run the unit tests");
     expect(markdown).toContain("3 tests passed");
     expect(markdown).toContain("## Assistant");
+    expect(markdown).not.toContain("transcript truncated");
   });
 
   it("honors tool-detail and timestamp options in both formats", () => {
@@ -359,5 +360,30 @@ describe("conversation transcript export", () => {
 
     expect(html).not.toMatch(/<(?:link|script)[^>]+(?:href|src)=/i);
     expect(html).toMatchSnapshot();
+  });
+
+  it("shows a truncation notice in Markdown and HTML exports", () => {
+    const truncatedEvents = {
+      events: [userMessage],
+      truncated: true,
+      totalLoaded: 1,
+    };
+
+    const markdown = eventsToMarkdown(truncatedEvents, defaultOptions);
+    const html = eventsToHtml(truncatedEvents, defaultOptions);
+
+    const notice =
+      "[transcript truncated: showing the most recent 1 events; earlier events omitted]";
+    expect(markdown).toContain(notice);
+    expect(html).toContain(notice);
+    expect(html).toContain('class="note truncation-notice"');
+  });
+
+  it("omits the truncation notice from complete Markdown and HTML exports", () => {
+    const markdown = eventsToMarkdown([userMessage], defaultOptions);
+    const html = eventsToHtml([userMessage], defaultOptions);
+
+    expect(markdown).not.toContain("transcript truncated");
+    expect(html).not.toContain("transcript truncated");
   });
 });
